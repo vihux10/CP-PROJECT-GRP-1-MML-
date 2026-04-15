@@ -1,0 +1,157 @@
+from flask import Flask, request, jsonify, render_template_string
+from datetime import datetime, timedelta
+import uuid
+
+app = Flask(__name__)
+
+# Store data (temporary)
+maintenance_data = []
+
+# ---------- BACKEND ----------
+
+def evaluate_status(service_date, cycle_days):
+    next_due = service_date + timedelta(days=cycle_days)
+    today = datetime.now()
+    return "OVERDUE" if today >= next_due else "OK"
+
+# ---------- API ROUTES ----------
+
+# Add new maintenance entry
+@app.route('/api/maintenance', methods=['POST'])
+def add_entry():
+    data = request.json
+
+    entry = {
+        "uid": str(uuid.uuid4()),
+        "machine_name": data.get("machine_name"),
+        "description": data.get("description"),
+        "last_checked": datetime.strptime(data.get("last_checked"), "%Y-%m-%d"),
+        "cycle_days": int(data.get("cycle_days"))
+    }
+
+    maintenance_data.append(entry)
+    return jsonify({"msg": "Entry created"}), 201
+
+
+# Get all entries
+@app.route('/api/maintenance', methods=['GET'])
+def fetch_entries():
+    output = []
+
+    for item in maintenance_data:
+        status = evaluate_status(item["last_checked"], item["cycle_days"])
+
+        output.append({
+            "uid": item["uid"],
+            "machine_name": item["machine_name"],
+            "description": item["description"],
+            "last_checked": item["last_checked"].strftime("%Y-%m-%d"),
+            "cycle_days": item["cycle_days"],
+            "status": status
+        })
+
+    return jsonify(output)
+
+
+# Delete entry
+@app.route('/api/maintenance/<uid>', methods=['DELETE'])
+def remove_entry(uid):
+    global maintenance_data
+    maintenance_data = [m for m in maintenance_data if m["uid"] != uid]
+    return jsonify({"msg": "Deleted"})
+
+
+# ---------- FRONTEND ----------
+
+PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Maintenance Tracker</title>
+    <style>
+        body { font-family: Arial; background:#f5f5f5; padding:20px; }
+        .card { background:white; padding:10px; margin:10px 0; border-radius:8px; }
+        .ok { color: green; }
+        .overdue { color: red; }
+    </style>
+</head>
+<body>
+
+<h2>⚙ Maintenance Tracker</h2>
+
+<input id="m" placeholder="Machine"><br><br>
+<input id="d" placeholder="Task"><br><br>
+<input id="date" type="date"><br><br>
+<input id="cycle" type="number" placeholder="Days Interval"><br><br>
+
+<button onclick="createEntry()">Add</button>
+
+<h3>All Machines</h3>
+<div id="list"></div>
+
+<script>
+async function loadData() {
+    const res = await fetch('/api/maintenance');
+    const data = await res.json();
+
+    const container = document.getElementById('list');
+    container.innerHTML = "";
+
+    data.forEach(item => {
+        const div = document.createElement('div');
+        div.className = "card";
+
+        div.innerHTML = `
+            <b>${item.machine_name}</b><br>
+            ${item.description}<br>
+            Status: <span class="${item.status === 'OVERDUE' ? 'overdue' : 'ok'}">
+                ${item.status}
+            </span><br>
+            <button onclick="deleteEntry('${item.uid}')">Delete</button>
+        `;
+
+        container.appendChild(div);
+    });
+}
+
+async function createEntry() {
+    const machine = document.getElementById('m').value;
+    const desc = document.getElementById('d').value;
+    const date = document.getElementById('date').value;
+    const cycle = document.getElementById('cycle').value;
+
+    await fetch('/api/maintenance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            machine_name: machine,
+            description: desc,
+            last_checked: date,
+            cycle_days: cycle
+        })
+    });
+
+    loadData();
+}
+
+async function deleteEntry(id) {
+    await fetch(`/api/maintenance/${id}`, { method: 'DELETE' });
+    loadData();
+}
+
+loadData();
+</script>
+
+</body>
+</html>
+"""
+
+@app.route('/')
+def home():
+    return render_template_string(PAGE)
+
+# ---------- RUN ----------
+if __name__ == '__main__':
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
